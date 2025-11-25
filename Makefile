@@ -1,20 +1,26 @@
 CFLAGS=-std=c11 -g
 LDFLAGS=-static
 SRCS=$(wildcard *.c)
-OBJS=$(SRCS:.c=.o)
+OBJS=$(addprefix objdir/,$(SRCS:.c=.o))
+TARGET=./bin/9cc
 
-9cc: $(OBJS)
-	$(CC) -o 9cc $(OBJS) $(LDFLAGS)
+all: $(TARGET)
 
-$(OBJS): 9cc.h
+$(TARGET): $(OBJS)
+	mkdir -p ./bin
+	$(CC) -o $(TARGET) $(OBJS) $(LDFLAGS)
 
-test: 9cc
+objdir/%.o: %.c 9cc.h
+	mkdir -p objdir
+	$(CC) $(CFLAGS) -c $< -o $@
+
+test: $(TARGET)
 	./test.sh
 
 clean:
-	rm -f 9cc *.o *~ tmp* tmp.s
+	rm -rf ./bin ./tmpdir objdir
 
-.PHONY: test clean
+.PHONY: test clean all
 
 compose/build:
 	docker build --platform=linux/amd64 -t 9cc .
