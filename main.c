@@ -5,17 +5,15 @@ int main(int argc, char **argv) {
     error("%s: invalid number of arguments", argv[0]);
   }
 
-  // 入力をトークナイズ
   user_input = argv[1];
   current_token = tokenize();
   Node *node = expr();
 
-  // アセンブリのヘッダ出力
+  // header output for assembly
   printf(".intel_syntax noprefix\n");
   printf(".globl main\n");
   printf("main:\n");
 
-  // 抽象構文木を降りながらコード生成
   gen(node);
 
   // stackトップに式全体の値が残っているはずなので

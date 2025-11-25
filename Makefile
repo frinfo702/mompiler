@@ -19,6 +19,7 @@ test: $(TARGET)
 
 clean:
 	rm -rf ./bin ./tmpdir objdir
+	
 
 .PHONY: test clean all
 
