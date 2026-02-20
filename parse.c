@@ -9,16 +9,19 @@
 // global environment variable
 char *user_input;
 Token *current_token;
+Node *code[1000];
+int code_len;
+int stack_size;
 
-/**
- * Creates a new AST node for operators.
- * Args:
- *   kind: Type of the node
- *   left_hand_side: Left child node
- *   right_hand_side: Right child node
- * Returns:
- *   Pointer to the newly created node
- */
+typedef struct LVar LVar;
+struct LVar {
+  LVar *next;
+  Token *tok;
+  int offset;
+};
+
+static LVar *locals;
+
 Node *new_node(NodeKind kind, Node *lhs, Node *rhs) {
   Node *node = calloc(1, sizeof(Node));
   node->kind = kind;
@@ -27,13 +30,6 @@ Node *new_node(NodeKind kind, Node *lhs, Node *rhs) {
   return node;
 }
 
-/**
- * Creates a new AST node for numbers.
- * Args:
- *   value: Integer value for the node
- * Returns:
- *   Pointer to the newly created number node
- */
 Node *new_node_num(int value) {
   Node *node = calloc(1, sizeof(Node));
   node->kind = ND_NUM;
@@ -41,15 +37,13 @@ Node *new_node_num(int value) {
   return node;
 }
 
-/**
- * Creates a new token and links it to the previous token.
- * Args:
- *   kind: Type of the token to create
- *   prev: Previous token to link to
- *   str: String representation of the token
- * Returns:
- *   Pointer to the newly created token
- */
+Node *new_node_lvar(LVar *lvar) {
+  Node *node = calloc(1, sizeof(Node));
+  node->kind = ND_LVAR;
+  node->offset = lvar->offset;
+  return node;
+}
+
 Token *new_token(TokenKind kind, Token *prev_token, char *str, int length) {
   Token *new_tok = calloc(1, sizeof(Token));
   new_tok->kind = kind;
@@ -59,12 +53,6 @@ Token *new_token(TokenKind kind, Token *prev_token, char *str, int length) {
   return new_tok;
 }
 
-/**
- * Reports an error with formatted message and exits.
- * Args:
- *   fmt: Format string for the error message
- *   ...: Variable arguments for formatting
- */
 void error(char *fmt, ...) {
   va_list ap;
   va_start(ap, fmt);
@@ -73,63 +61,46 @@ void error(char *fmt, ...) {
   exit(1);
 }
 
-/**
- * Reports an error with location information and exits.
- * Args:
- *   location: Pointer to the location in source where error occurred
- *   fmt: Format string for the error message
- *   ...: Variable arguments for formatting
- */
 void error_at(char *location, char *fmt, ...) {
   va_list ap;
   va_start(ap, fmt);
 
   int position = location - user_input;
   fprintf(stderr, "%s\n", user_input);
-  fprintf(stderr, "%*s", position, ""); // print position spaces.
+  fprintf(stderr, "%*s", position, "");
   fprintf(stderr, "^ ");
   vfprintf(stderr, fmt, ap);
   fprintf(stderr, "\n");
   exit(1);
 }
 
-/**
- * Consumes the next token if it matches the expected operator.
- * Args:
- *   op: Expected operator character
- * Returns:
- *   true if token was consumed, false otherwise
- */
+bool equal(Token *tok, char *op) {
+  return tok->kind == TK_RESERVED && strlen(op) == tok->length &&
+         memcmp(tok->str, op, tok->length) == 0;
+}
+
 bool consume(char *op) {
-  if (current_token->kind != TK_RESERVED ||
-      strlen(op) !=
-          current_token
-              ->length || // 先にチェックしないと">="を">"と"="に認識する可能性あり
-      memcmp(current_token->str, op, current_token->length))
+  if (!equal(current_token, op))
     return false;
   current_token = current_token->next;
   return true;
 }
 
-/**
- * Ensures current token is the expected symbol and advances.
- * Args:
- *   op: Expected operator character
- */
+Token *consume_ident() {
+  if (current_token->kind != TK_IDENT)
+    return NULL;
+  Token *tok = current_token;
+  current_token = current_token->next;
+  return tok;
+}
+
 void expect_symbol(char *op) {
-  if (current_token->kind != TK_RESERVED ||
-      strlen(op) != current_token->length ||
-      memcmp(current_token->str, op, current_token->length))
-    error_at(current_token->str, "expected: \"%s\" but got: \"%s\"", op,
-             current_token->str);
+  if (!equal(current_token, op))
+    error_at(current_token->str, "expected: \"%s\" but got: \"%.*s\"", op,
+             current_token->length, current_token->str);
   current_token = current_token->next;
 }
 
-/**
- * Ensures next token is a number and returns its value.
- * Returns:
- *   The value of the number token
- */
 int expect_number() {
   if (current_token->kind != TK_NUM)
     error_at(current_token->str, "expected a number");
@@ -138,22 +109,16 @@ int expect_number() {
   return val;
 }
 
-/**
- * Checks if the current token is EOF.
- * Returns:
- *   true if current token is EOF, false otherwise
- */
 bool at_eof() { return current_token->kind == TK_EOF; }
 
 bool startswith(char *target_str, char *prefix) {
   return memcmp(target_str, prefix, strlen(prefix)) == 0;
 }
 
-/**
- * Tokenizes the input string into a linked list of tokens.
- * Returns:
- *   Pointer to the first token in the linked list
- */
+bool is_ident1(char c) { return isalpha((unsigned char)c) || c == '_'; }
+
+bool is_ident2(char c) { return isalnum((unsigned char)c) || c == '_'; }
+
 Token *tokenize() {
   char *input_ptr = user_input;
   Token head;
@@ -161,8 +126,14 @@ Token *tokenize() {
   Token *tail = &head;
 
   while (*input_ptr) {
-    if (isspace(*input_ptr)) {
+    if (isspace((unsigned char)*input_ptr)) {
       input_ptr++;
+      continue;
+    }
+
+    if (startswith(input_ptr, "return") && !is_ident2(input_ptr[6])) {
+      tail = new_token(TK_RESERVED, tail, input_ptr, 6);
+      input_ptr += 6;
       continue;
     }
 
@@ -173,14 +144,22 @@ Token *tokenize() {
       continue;
     }
 
-    // 1文字の演算子を処理
-    if (strchr("+-*/()<>", *input_ptr)) {
+    if (strchr("+-*/()<>;=", *input_ptr)) {
       tail = new_token(TK_RESERVED, tail, input_ptr, 1);
       input_ptr++;
       continue;
     }
 
-    if (isdigit(*input_ptr)) {
+    if (is_ident1(*input_ptr)) {
+      char *token_start = input_ptr;
+      input_ptr++;
+      while (is_ident2(*input_ptr))
+        input_ptr++;
+      tail = new_token(TK_IDENT, tail, token_start, input_ptr - token_start);
+      continue;
+    }
+
+    if (isdigit((unsigned char)*input_ptr)) {
       tail = new_token(TK_NUM, tail, input_ptr, 0);
       char *token_start = input_ptr;
       tail->val = strtol(input_ptr, &input_ptr, 10);
@@ -195,20 +174,59 @@ Token *tokenize() {
   return head.next;
 }
 
-/**
- * Parses expressions.
- * Follows the grammar rule: expr = equality
- * Returns:
- *   Pointer to the root node of the parsed expression
- */
-Node *expr() { return equality(); }
+LVar *find_lvar(Token *tok) {
+  for (LVar *var = locals; var; var = var->next) {
+    if (var->tok->length == tok->length &&
+        memcmp(tok->str, var->tok->str, tok->length) == 0) {
+      return var;
+    }
+  }
+  return NULL;
+}
 
-/**
- * Parses equality expressions with left-associative operators (==, !=).
- * Follows the grammar rule: equality = relational ("==" relational | "!="
- * relational)* Returns: Pointer to the root node of the parsed equality
- * expression
- */
+void program() {
+  locals = NULL;
+  code_len = 0;
+
+  while (!at_eof()) {
+    if (code_len >= 1000)
+      error("too many statements");
+    code[code_len++] = stmt();
+  }
+
+  int max_offset = 0;
+  for (LVar *var = locals; var; var = var->next) {
+    if (max_offset < var->offset)
+      max_offset = var->offset;
+  }
+  stack_size = (max_offset + 15) / 16 * 16;
+}
+
+Node *stmt() {
+  if (consume("return")) {
+    Node *node = new_node(ND_RETURN, expr(), NULL);
+    expect_symbol(";");
+    return node;
+  }
+
+  Node *node = expr();
+  if (consume(";") || at_eof())
+    return node;
+
+  error_at(current_token->str, "expected ';'");
+  return NULL;
+}
+
+Node *expr() { return assign(); }
+
+Node *assign() {
+  Node *node = equality();
+
+  if (consume("="))
+    return new_node(ND_ASSIGN, node, assign());
+  return node;
+}
+
 Node *equality() {
   Node *node = relational();
 
@@ -222,12 +240,6 @@ Node *equality() {
   }
 }
 
-/**
- * Parses relational expressions with left-associative operators (<, <=, >, >=).
- * Follows the grammar rule: relational = add ("<" add | "<=" add | ">" add |
- * ">=" add)* Returns: Pointer to the root node of the parsed relational
- * expression
- */
 Node *relational() {
   Node *node = add();
 
@@ -245,12 +257,6 @@ Node *relational() {
   }
 }
 
-/**
- * Parses additive expressions with left-associative operators (+, -).
- * Follows the grammar rule: add = mul ("+" mul | "-" mul)*
- * Returns:
- *   Pointer to the root node of the parsed additive expression
- */
 Node *add() {
   Node *node = mul();
 
@@ -264,12 +270,6 @@ Node *add() {
   }
 }
 
-/**
- * Parses multiplicative expressions with left-associative operators (*, /).
- * Follows the grammar rule: mul = unary ("*" unary | "/" unary)*
- * Returns:
- *   Pointer to the root node of the parsed multiplicative expression
- */
 Node *mul() {
   Node *node = unary();
 
@@ -283,12 +283,6 @@ Node *mul() {
   }
 }
 
-/**
- * Parses unary expressions with optional unary operators (+, -).
- * Follows the grammar rule: unary = ("+" | "-")? primary
- * Returns:
- *   Pointer to the root node of the parsed unary expression
- */
 Node *unary() {
   if (consume("+"))
     return unary();
@@ -297,17 +291,27 @@ Node *unary() {
   return primary();
 }
 
-/**
- * Parses primary expressions (numbers or parenthesized expressions).
- * Follows the grammar rule: primary = "(" expr ")" | num
- * Returns:
- *   Pointer to the root node of the parsed primary expression
- */
 Node *primary() {
   if (consume("(")) {
     Node *node = expr();
     expect_symbol(")");
     return node;
+  }
+
+  Token *tok = consume_ident();
+  if (tok) {
+    LVar *var = find_lvar(tok);
+    if (!var) {
+      var = calloc(1, sizeof(LVar));
+      var->next = locals;
+      var->tok = tok;
+      if (locals)
+        var->offset = locals->offset + 8;
+      else
+        var->offset = 8;
+      locals = var;
+    }
+    return new_node_lvar(var);
   }
 
   return new_node_num(expect_number());

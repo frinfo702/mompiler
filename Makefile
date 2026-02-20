@@ -1,5 +1,5 @@
-CFLAGS=-std=c11 -g
-LDFLAGS=-static
+CFLAGS ?= -std=c11 -g
+LDFLAGS ?=
 SRCS=$(wildcard *.c)
 OBJS=$(addprefix objdir/,$(SRCS:.c=.o))
 TARGET=./bin/9cc
